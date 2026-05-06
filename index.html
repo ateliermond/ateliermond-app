@@ -188,7 +188,8 @@ var state = {
   expanded: null,
   editing: null,
   adding: false,
-  syncStatus: "loading"
+  syncStatus: "loading",
+  splitting: null
 };
 
 var STAGES = [
@@ -435,6 +436,8 @@ function renderProdRow(oid, p){
   var idx=sidx(p.stage);
   var szKey=(p.groesse||"M").toUpperCase();
   var units=ovenUnits(p);
+  var splitKey=oid+"_"+p.id;
+  var isSplitting=state.splitting===splitKey;
   var html='<div style="background:'+(p.done?"#F7F4F4":"#fff")+';border:1px solid #DDD9D5;border-radius:6px;padding:9px 11px;margin-bottom:5px;opacity:'+(p.done?0.6:1)+'">';
   html+='<div class="flex gap8" style="align-items:center;flex-wrap:wrap">';
   html+='<button style="width:18px;height:18px;border-radius:3px;border:1.5px solid '+(p.done?"#4A7C5E":"#C4BEBA")+';background:'+(p.done?"#4A7C5E":"none")+';flex-shrink:0;padding:0;display:flex;align-items:center;justify-content:center" onclick="doDoneProd(\''+oid+'\',\''+p.id+'\')">'+(p.done?'<span style="color:#fff;font-size:10px">✓</span>':'')+' </button>';
@@ -446,11 +449,34 @@ function renderProdRow(oid, p){
     html+='</div>';
     html+='<div style="display:flex;gap:4px;margin-left:auto;flex-shrink:0">';
     html+='<button class="btn" '+(idx===0?"disabled":"")+' onclick="doMoveProd(\''+oid+'\',\''+p.id+'\',\''+(STAGES[idx-1]?STAGES[idx-1].id:"")+'\')">◂</button>';
-    html+='<button class="btn" '+(idx===STAGES.length-1?"disabled":"")+' onclick="doMoveProd(\''+oid+'\',\''+p.id+'\',\''+(STAGES[idx+1]?STAGES[idx+1].id:"")+'\')">▸</button>';
+    // Next button: if qty > 1, show split option; else move all
+    if(idx < STAGES.length-1){
+      if(p.qty > 1){
+        html+='<button class="btn" onclick="startSplit(\''+oid+'\',\''+p.id+'\')" style="color:#2E2621;font-weight:600" title="Teilweise weiterschieben">▸</button>';
+      } else {
+        html+='<button class="btn" onclick="doMoveProd(\''+oid+'\',\''+p.id+'\',\''+(STAGES[idx+1]?STAGES[idx+1].id:"")+'\')">▸</button>';
+      }
+    } else {
+      html+='<button class="btn" disabled>▸</button>';
+    }
     html+='</div>';
   }
   html+='</div>';
   if(p.note)html+='<p style="font-size:11px;color:#8A8480;font-style:italic;margin-top:5px;padding-left:26px">↳ '+esc(p.note)+'</p>';
+
+  // Split UI
+  if(isSplitting && !p.done && idx < STAGES.length-1){
+    var nextStage=STAGES[idx+1];
+    html+='<div style="margin-top:8px;padding:10px 12px;background:#F7F4F4;border-radius:6px;border:1px solid #DDD9D5">';
+    html+='<div style="font-size:11px;color:#6B6260;margin-bottom:8px">Wie viele von <strong>'+p.qty+'×</strong> weiter zu <strong>'+nextStage.label+'</strong>?</div>';
+    html+='<div class="flex gap8" style="align-items:center">';
+    html+='<input type="number" id="split-qty-'+p.id+'" min="1" max="'+(p.qty-1)+'" value="1" class="inp-inline" style="width:70px;text-align:center;font-size:16px;font-weight:300">';
+    html+='<span style="font-size:12px;color:#8A8480">von '+p.qty+' Stk.</span>';
+    html+='<button class="btn-primary" style="font-size:11px;padding:6px 14px" onclick="doPartialMove(\''+oid+'\',\''+p.id+'\',\''+nextStage.id+'\')">Weiterschieben</button>';
+    html+='<button class="btn-sec" style="font-size:11px;padding:6px 10px" onclick="cancelSplit()">Abbrechen</button>';
+    html+='</div></div>';
+  }
+
   html+='</div>';
   return html;
 }
@@ -545,11 +571,35 @@ function saveForm(oid,isNew){
 }
 
 // ── ORDER ACTIONS ─────────────────────────────────────
-function toggleExpand(id){state.expanded=state.expanded===id?null:id;render();}
+function toggleExpand(id){state.expanded=state.expanded===id?null:id;state.splitting=null;render();}
 function doDelOrder(id){var o=state.orders.find(function(x){return x.id===id;});state.orders=state.orders.filter(function(x){return x.id!==id;});if(o&&o._dbId)delRow(o._dbId).catch(function(){});render();}
-function doMoveProd(oid,pid,stage){if(!stage)return;state.orders=state.orders.map(function(o){if(o.id!==oid)return o;return Object.assign({},o,{products:o.products.map(function(p){return p.id===pid?Object.assign({},p,{stage:stage,done:false}):p;})});});var upd=state.orders.find(function(x){return x.id===oid;});persist(Object.assign({},upd,{_type:"order"}),upd._dbId);render();}
-function doDoneProd(oid,pid){state.orders=state.orders.map(function(o){if(o.id!==oid)return o;return Object.assign({},o,{products:o.products.map(function(p){return p.id===pid?Object.assign({},p,{done:!p.done}):p;})});});var upd=state.orders.find(function(x){return x.id===oid;});persist(Object.assign({},upd,{_type:"order"}),upd._dbId);render();}
+function doMoveProd(oid,pid,stage){if(!stage)return;state.splitting=null;state.orders=state.orders.map(function(o){if(o.id!==oid)return o;return Object.assign({},o,{products:(o.products||[]).map(function(p){return p.id===pid?Object.assign({},p,{stage:stage,done:false}):p;})});});var upd=state.orders.find(function(x){return x.id===oid;});persist(Object.assign({},upd,{_type:"order"}),upd._dbId);render();}
+function doDoneProd(oid,pid){state.splitting=null;state.orders=state.orders.map(function(o){if(o.id!==oid)return o;return Object.assign({},o,{products:(o.products||[]).map(function(p){return p.id===pid?Object.assign({},p,{done:!p.done}):p;})});});var upd=state.orders.find(function(x){return x.id===oid;});persist(Object.assign({},upd,{_type:"order"}),upd._dbId);render();}
 function setFilter(s){state.filterStage=s;render();}
+function startSplit(oid,pid){state.splitting=oid+"_"+pid;render();}
+function cancelSplit(){state.splitting=null;render();}
+function doPartialMove(oid,pid,toStage){
+  var el=document.getElementById("split-qty-"+pid);
+  var moveQty=Math.max(1,parseInt(el?el.value:1)||1);
+  state.orders=state.orders.map(function(o){
+    if(o.id!==oid)return o;
+    var newProds=[];
+    (o.products||[]).forEach(function(p){
+      if(p.id!==pid){newProds.push(p);return;}
+      if(moveQty>=p.qty){
+        newProds.push(Object.assign({},p,{stage:toStage,done:false}));
+      } else {
+        newProds.push(Object.assign({},p,{id:uid(),qty:moveQty,stage:toStage,done:false}));
+        newProds.push(Object.assign({},p,{qty:p.qty-moveQty}));
+      }
+    });
+    return Object.assign({},o,{products:newProds});
+  });
+  state.splitting=null;
+  var upd=state.orders.find(function(x){return x.id===oid;});
+  persist(Object.assign({},upd,{_type:"order"}),upd._dbId);
+  render();
+}
 
 // ── OVEN VIEW ─────────────────────────────────────────
 function renderOfen(){
